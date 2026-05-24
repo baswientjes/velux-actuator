@@ -1,0 +1,187 @@
+# Velux window actuator — HomeAssistant helpers
+#
+# Paste the relevant sections into your HA configuration.yaml,
+# or split into separate packages files if you use the packages: approach.
+#
+# Assumes the ESPHome cover entity is: cover.velux_window
+# Assumes the weather entity is:       weather.home  (adjust to your integration)
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+input_boolean:
+  velux_sleep_mode:
+    name: "Velux Sleep Mode"
+    icon: mdi:sleep
+
+input_number:
+  velux_sleep_duration:
+    name: "Velux Sleep Duration"
+    icon: mdi:timer-outline
+    min: 1
+    max: 10
+    step: 0.5
+    unit_of_measurement: h
+    mode: slider
+    initial: 10
+
+timer:
+  velux_sleep_mode:
+    name: "Velux Sleep Mode Timer"
+    icon: mdi:sleep
+
+
+# ── Automations ──────────────────────────────────────────────────────────────
+
+automation:
+
+  # ── Sleep mode: start ──────────────────────────────────────────────────────
+  # Activating the sleep mode switch starts the countdown timer.
+  - id: velux_sleep_mode_start
+    alias: "Velux: Start sleep mode"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.velux_sleep_mode
+        to: "on"
+    action:
+      - service: timer.start
+        target:
+          entity_id: timer.velux_sleep_mode
+        data:
+          # Convert hours → seconds
+          duration: >
+            {{ (states('input_number.velux_sleep_duration') | float * 3600) | int }}
+
+  # ── Sleep mode: end (timer expired) ───────────────────────────────────────
+  - id: velux_sleep_mode_end_timer
+    alias: "Velux: End sleep mode when timer expires"
+    trigger:
+      - platform: event
+        event_type: timer.finished
+        event_data:
+          entity_id: timer.velux_sleep_mode
+    action:
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.velux_sleep_mode
+
+  # ── Sleep mode: cancel timer if user turns off sleep mode manually ─────────
+  - id: velux_sleep_mode_cancel
+    alias: "Velux: Cancel sleep timer on manual deactivation"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.velux_sleep_mode
+        to: "off"
+    condition:
+      - condition: state
+        entity_id: timer.velux_sleep_mode
+        state: active
+    action:
+      - service: timer.cancel
+        target:
+          entity_id: timer.velux_sleep_mode
+
+  # ── Close on rain forecast ─────────────────────────────────────────────────
+  # Triggers when HA weather integration reports rain/drizzle/pouring/etc.
+  # Also fires if the cover is already closed — that is harmless.
+  - id: velux_close_on_rain
+    alias: "Velux: Close on rain forecast"
+    trigger:
+      - platform: state
+        entity_id: weather.home
+        attribute: condition
+        to:
+          - rainy
+          - pouring
+          - lightning-rainy
+          - hail
+    condition:
+      # Never override sleep mode — a sleeping person trumps rain
+      - condition: state
+        entity_id: input_boolean.velux_sleep_mode
+        state: "off"
+      - condition: state
+        entity_id: cover.velux_window
+        state: open
+    action:
+      - service: cover.close_cover
+        target:
+          entity_id: cover.velux_window
+
+  # ── Open for heat venting ──────────────────────────────────────────────────
+  # Adjust thresholds to taste. Requires a temperature sensor inside the attic.
+  # Replace sensor.attic_temperature with your actual entity.
+  - id: velux_open_for_venting
+    alias: "Velux: Open for heat venting"
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.attic_temperature   # ADJUST to your sensor
+        above: 28                              # °C — tune to preference
+    condition:
+      - condition: state
+        entity_id: input_boolean.velux_sleep_mode
+        state: "off"
+      # Only vent when outside is cooler than inside (avoids pulling in hot air)
+      - condition: template
+        value_template: >
+          {{ state_attr('weather.home', 'temperature') | float
+             < states('sensor.attic_temperature') | float - 2 }}
+      # Only vent when weather is fair
+      - condition: state
+        entity_id: weather.home
+        attribute: condition
+        state:
+          - sunny
+          - partlycloudy
+          - cloudy
+          - windy
+      - condition: state
+        entity_id: cover.velux_window
+        state: closed
+    action:
+      - service: cover.open_cover
+        target:
+          entity_id: cover.velux_window
+
+  # ── Close when cold outside ────────────────────────────────────────────────
+  # Prevents losing heat during cold weather. Adjust threshold to taste.
+  - id: velux_close_when_cold
+    alias: "Velux: Close when outside is cold"
+    trigger:
+      - platform: numeric_state
+        entity_id: weather.home
+        attribute: temperature
+        below: 12                             # °C — tune to preference
+    condition:
+      - condition: state
+        entity_id: input_boolean.velux_sleep_mode
+        state: "off"
+      - condition: state
+        entity_id: cover.velux_window
+        state: open
+    action:
+      - service: cover.close_cover
+        target:
+          entity_id: cover.velux_window
+
+  # ── Close when wind is strong ──────────────────────────────────────────────
+  # Some weather integrations expose wind speed as a forecast attribute.
+  # This uses the condition as a proxy; replace with a wind sensor if available.
+  - id: velux_close_on_wind
+    alias: "Velux: Close on high wind"
+    trigger:
+      - platform: state
+        entity_id: weather.home
+        attribute: condition
+        to:
+          - windy-variant   # heavy wind in HA weather
+    condition:
+      - condition: state
+        entity_id: input_boolean.velux_sleep_mode
+        state: "off"
+      - condition: state
+        entity_id: cover.velux_window
+        state: open
+    action:
+      - service: cover.close_cover
+        target:
+          entity_id: cover.velux_window

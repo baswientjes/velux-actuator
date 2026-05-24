@@ -1,0 +1,7 @@
+# Windows
+desktop.ini
+*.ico
+
+# Local dev
+CLAUDE.md
+.documentation/
